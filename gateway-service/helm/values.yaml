@@ -1,0 +1,6 @@
+image:
+  repository: amarikamil5/gateway-service
+  tag: latest
+
+users_service_url: http://users:8000
+orders_service_url: http://orders:8000
