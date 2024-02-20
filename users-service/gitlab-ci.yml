@@ -1,0 +1,140 @@
+variables:
+  APP_REGISTRY: users
+  KUBE_NAMESPACE_dev: dev
+  KUBE_NAMESPACE_staging: staging
+  KUBE_NAMESPACE_prod: prod
+  IP_DEV: 52.211.234.44
+  IP_STAGING: 52.211.234.44
+  IP_PROD: 52.211.234.44
+  NODEPORT_DEV: 30000
+  NODEPORT_STAGING: 30001
+  NODEPORT_PROD: 30002
+
+stages:
+  - test
+  - build
+  - run
+  - push
+  - deploy_dev
+  - deploy_staging
+  - deploy_prod
+
+build:
+  stage: build
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE:latest" "$APP_REGISTRY"
+    - docker tag "$CI_REGISTRY_IMAGE:latest" "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+
+run:
+  stage: run
+  script:
+    - docker run -d -p 80:80 --name orders "$CI_REGISTRY_IMAGE:latest"
+    - sleep 10
+    - curl localhost
+    - docker stop orders
+    - docker rm orders
+
+push:
+  stage: push
+  before_script:
+    - docker info
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - if [ ! -z "$CI_COMMIT_TAG" ]; then docker push "$CI_REGISTRY_IMAGE:latest"; fi
+
+stop_dev:
+  stage: deploy_dev
+  variables:
+    NAMESPACE: dev
+  when: manual
+  # Don't stop the "review" for master branch or tags,
+  # it is only for branches (so PRs (most of the time))
+  environment:
+    name: dev-$CI_BUILD_REF_NAME
+    action: stop
+  script:
+    - helm uninstall users -n $NAMESPACE
+
+stop_staging:
+  stage: deploy_staging
+  variables:
+    NAMESPACE: staging
+  when: manual
+  # Don't stop the "review" for master branch or tags,
+  # it is only for branches (so PRs (most of the time))
+  environment:
+    name: staging-$CI_BUILD_REF_NAME
+    action: stop
+  script:
+    - helm uninstall users -n $NAMESPACE
+
+deploy_dev:
+  # Use the official docker image.
+  image: docker:latest
+  environment:
+    name: dev-$CI_BUILD_REF_NAME
+    url: http://$IP_DEV:$NODEPORT_DEV
+    on_stop: stop_dev
+  stage: deploy_dev
+  variables:
+    NAMESPACE: dev
+  services:
+    - docker:dind
+  # Default branch leaves tag empty (= latest tag)
+  # All other branches are tagged with the escaped branch name (commit ref slug)
+  script:
+    - rm -Rf ~/.kube
+    - mkdir ~/.kube
+    - ls
+    - cat $KUBECONFIG > ~/.kube/config
+    - cp helm/values.yaml values.yml
+    - cat values.yml
+    - helm upgrade --install users helm/ --values=values.yml --namespace $NAMESPACE --set image.repository="$CI_REGISTRY_IMAGE" --set image.tag="$CI_COMMIT_SHORT_SHA"
+
+deploy_staging:
+  # Use the official docker image.
+  image: docker:latest
+  environment:
+    name: staging-$CI_BUILD_REF_NAME
+    url: http://$IP_STAGING:$NODEPORT_STAGING
+    on_stop: stop_staging
+  stage: deploy_staging
+  variables:
+    NAMESPACE: staging
+  services:
+    - docker:dind
+  # Default branch leaves tag empty (= latest tag)
+  # All other branches are tagged with the escaped branch name (commit ref slug)
+  script:
+    - rm -Rf ~/.kube
+    - mkdir ~/.kube
+    - ls
+    - cat $KUBECONFIG > ~/.kube/config
+    - cp helm/values.yaml values.yml
+    - cat values.yml
+    - helm upgrade --install users helm/ --values=values.yml --namespace $NAMESPACE --set image.repository="$CI_REGISTRY_IMAGE" --set image.tag="$CI_COMMIT_SHORT_SHA"
+
+deploy_prod:
+  # Use the official docker image.
+  image: docker:latest
+  when: manual
+  environment:
+    name: prod
+    url: http://$IP_PROD:$NODEPORT_PROD
+  stage: deploy_prod
+  variables:
+    NAMESPACE: prod
+  services:
+    - docker:dind
+  # Default branch leaves tag empty (= latest tag)
+  # All other branches are tagged with the escaped branch name (commit ref slug)
+  script:
+    - rm -Rf ~/.kube
+    - mkdir ~/.kube/
+    - ls
+    - cat $KUBECONFIG > ~/.kube/config
+    - kubectl config view --raw >~/.kube/config
+    - cp helm/values.yaml values.yml
+    - cat values.yml
+    - helm upgrade --install users helm/ --values=values.yml --namespace $NAMESPACE --set image.repository="$CI_REGISTRY_IMAGE" --set image.tag="$CI_COMMIT_SHORT_SHA"
